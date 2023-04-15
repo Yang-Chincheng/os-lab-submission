@@ -18,7 +18,7 @@
                    __LINE__);                                            \
             if (!cont) exit(-1);                                         \
         } else {                                                         \
-            /*printf("."); */                                                \
+            printf(".");                                                 \
             fflush(stdout);                                              \
             tCnt++;                                                      \
         }                                                                \
