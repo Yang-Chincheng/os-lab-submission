@@ -96,8 +96,8 @@ static void* heap_base;
 #define HEAP_NEXT(ptr) PTR_INCR(ptr, SIZE(ptr))
 #define HEAP_PREV(ptr) PTR_INCR(ptr, -UNZIP_SIZE( PTR_INCR(ptr, -4*WORD_SIZE) ))
 
-#define MIN_BLK_BITS 5
-#define MAX_BLK_BITS 20
+#define MIN_BLK_BITS 8
+#define MAX_BLK_BITS 10
 #define RANK_NUM (MAX_BLK_BITS - MIN_BLK_BITS + 1)
 
 static int get_rank(word_t size) {
