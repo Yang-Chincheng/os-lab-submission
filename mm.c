@@ -101,7 +101,7 @@ word_t border_offset;
 #define HEAP_PREV(ptr) PTR_INCR(ptr, -UNZIP_SIZE( PTR_INCR(ptr, -2*WORD_SIZE) ))
 
 #define MIN_BLK_BITS 8
-#define MAX_BLK_BITS 9
+#define MAX_BLK_BITS 8
 #define STP_BLK_BITS 1
 #define RANK_NUM ((MAX_BLK_BITS - MIN_BLK_BITS) / STP_BLK_BITS + 1)
 
@@ -116,7 +116,7 @@ static inline int get_rank(word_t size) {
 #define EPI_BDR_PTR PTR_INCR(mem_heap_hi(), 1)
 #define BUCK(rank) PTR_INCR(heap_base, (rank) * WORD_SIZE)
 #define LIST(rank) PTR_INCR(heap_base, GET(BUCK(rank)))
-#define RANK(size) (get_rank(size))
+#define RANK(size) (0)
 
 static void list_init(void *ptr) {
     SET(NEX_PTR(ptr), BDR_OFF);
