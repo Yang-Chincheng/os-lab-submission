@@ -24,10 +24,13 @@
 // #define DEBUG
 #ifdef DEBUG
 static int count = 0;
-# define PRINT_MIN 17120
-# define PRINT_MAX 17130
-# define dbg_printf(...) if (count >= PRINT_MIN && count <= PRINT_MAX) printf(__VA_ARGS__);
+# define dbg_inc() (count++)
+# define PRINT_MIN 0
+# define PRINT_MAX 100000
+# define dbg_printf(...) \
+    if (count >= PRINT_MIN && count <= PRINT_MAX) printf(__VA_ARGS__)
 #else
+# define dbg_inc() 
 # define dbg_printf(...)
 #endif
 
@@ -49,7 +52,7 @@ static int count = 0;
 
 typedef unsigned long long uint64_t, dword_t;
 typedef unsigned int uint32_t, word_t;
-typedef signed int offset_t;
+typedef signed int int32_t, offset_t;
 typedef unsigned char uint8_t, byte_t;
 #define bool byte_t
 #define true (1)
@@ -59,7 +62,10 @@ typedef unsigned char uint8_t, byte_t;
 #define WORD_SIZE (sizeof(word_t))
 #define DWORD_SIZE (sizeof(dword_t))
 
-#define MIN_BLK_SIZE (SIZE_T_SIZE*2)
+#define MIN_BLK_SIZE (WORD_SIZE*4)
+#define META_SIZE (WORD_SIZE*2)
+#define MAX(a, b) ((a) > (b)? (a): (b))
+#define MIN(a, b) ((a) < (b)? (a): (b))
 
 // getter and setter for a word with its pointer
 #define GET(ptr) (*(word_t*)(ptr))
@@ -68,10 +74,10 @@ typedef unsigned char uint8_t, byte_t;
 #define PTR_DIFF(ptr, base) ( (word_t) ((char*)(ptr) - (char*)(base)) )
 #define PTR_INCR(ptr, offset) ( (void*) ( (char*)(ptr) + (offset_t)(offset) ) )
 
-// zip information for block status (last 3 bits) and size (the rest bits)
-#define ZIP(size, status) (((size) & ~0x7) | ((status) & 0x7))
-#define UNZIP_SIZE(ptr) (GET(ptr) & ~0x7)
-#define UNZIP_STAT(ptr) (GET(ptr) & 0x7)
+// zip information for block status (last 2 bits) and size (the rest bits)
+#define ZIP(size, status) (((size) & ~0x3) | ((status) & 0x3))
+#define UNZIP_SIZE(ptr) (GET(ptr) & ~0x3)
+#define UNZIP_STAT(ptr) (GET(ptr) & 0x3)
 
 // possible status for a block
 #define UNDEF 0
@@ -80,33 +86,32 @@ typedef unsigned char uint8_t, byte_t;
 #define BORDER 3
 
 static void* heap_base;
+word_t border_offset;
 
-// header (4byte) + prev (4byte) + footer (4byte) + next (4byte)
-#define META_SIZE (4*WORD_SIZE)
-
-#define HDR_PTR(ptr) PTR_INCR(ptr, -2*WORD_SIZE)
+#define HDR_PTR(ptr) PTR_INCR(ptr, -WORD_SIZE)
 #define SIZE(ptr) UNZIP_SIZE(HDR_PTR(ptr))
 #define STAT(ptr) UNZIP_STAT(HDR_PTR(ptr))
-#define FTR_PTR(ptr) PTR_INCR(ptr, SIZE(ptr) - 4*WORD_SIZE)
-#define NEX_PTR(ptr) PTR_INCR(ptr, -WORD_SIZE)
+#define FTR_PTR(ptr) PTR_INCR(ptr, SIZE(ptr) - 2*WORD_SIZE)
+#define NEX_PTR(ptr) (ptr)
 #define PRE_PTR(ptr) PTR_INCR(ptr, SIZE(ptr) - 3*WORD_SIZE)
 
 #define LIST_NEXT(ptr) PTR_INCR(heap_base, GET(NEX_PTR(ptr)))
 #define LIST_PREV(ptr) PTR_INCR(heap_base, GET(PRE_PTR(ptr)))
 #define HEAP_NEXT(ptr) PTR_INCR(ptr, SIZE(ptr))
-#define HEAP_PREV(ptr) PTR_INCR(ptr, -UNZIP_SIZE( PTR_INCR(ptr, -4*WORD_SIZE) ))
+#define HEAP_PREV(ptr) PTR_INCR(ptr, -UNZIP_SIZE( PTR_INCR(ptr, -2*WORD_SIZE) ))
 
 #define MIN_BLK_BITS 8
-#define MAX_BLK_BITS 10
-#define RANK_NUM (MAX_BLK_BITS - MIN_BLK_BITS + 1)
+#define MAX_BLK_BITS 11
+#define STP_BLK_BITS 1
+#define RANK_NUM ((MAX_BLK_BITS - MIN_BLK_BITS) / STP_BLK_BITS + 1)
 
-static int get_rank(word_t size) {
-    for (int i = MIN_BLK_BITS; i < MAX_BLK_BITS; ++i)
-        if ((1u << i) >= size) return i - MIN_BLK_BITS;
-    return MAX_BLK_BITS - MIN_BLK_BITS;
+static inline int get_rank(word_t size) {
+    for (int i = MIN_BLK_BITS; i < MAX_BLK_BITS; i += STP_BLK_BITS)
+        if ((1u << i) >= size) return (i - MIN_BLK_BITS) / STP_BLK_BITS;
+    return (MAX_BLK_BITS - MIN_BLK_BITS) / STP_BLK_BITS;
 }
 
-#define BDR_OFF ALIGN((RANK_NUM + 2) * WORD_SIZE)
+#define BDR_OFF (border_offset)
 #define PRO_BDR_PTR PTR_INCR(heap_base, BDR_OFF) 
 #define EPI_BDR_PTR PTR_INCR(mem_heap_hi(), 1)
 #define BUCK(rank) PTR_INCR(heap_base, (rank) * WORD_SIZE)
@@ -121,9 +126,9 @@ static void list_init(void *ptr) {
 static void list_remove(void* entry, int rank) {
     void *prev = LIST_PREV(entry);
     void *next = LIST_NEXT(entry);
-    if (STAT(prev) != BORDER) 
+    if (STAT(prev) == UNUSED) 
         SET(NEX_PTR(prev), PTR_DIFF(next, heap_base));
-    if (STAT(next) != BORDER) 
+    if (STAT(next) == UNUSED) 
         SET(PRE_PTR(next), PTR_DIFF(prev, heap_base));
     if (entry == LIST(rank)) 
         SET(BUCK(rank), PTR_DIFF(next, heap_base));
@@ -131,7 +136,7 @@ static void list_remove(void* entry, int rank) {
 
 static void list_push(void *entry, int rank) {
     void *list = LIST(rank);
-    if (STAT(list) != BORDER) 
+    if (STAT(list) == UNUSED) 
         SET(PRE_PTR(list), PTR_DIFF(entry, heap_base));
     SET(NEX_PTR(entry), PTR_DIFF(list, heap_base));
     SET(PRE_PTR(entry), BDR_OFF);
@@ -151,7 +156,6 @@ static void split(void *ptr, word_t size) {
     void* newptr = ptr + size;
     SET(HDR_PTR(newptr), ZIP(orgsize - size, UNUSED));
     SET(FTR_PTR(newptr), ZIP(orgsize - size, UNUSED));
-    // assert(orgsize - size >= META_SIZE + 8);
     list_push(newptr, RANK(orgsize - size));
     assert(STAT(newptr) == UNUSED);
 }
@@ -167,15 +171,15 @@ static void coalesce(void *pred_ptr, void *succ_ptr, bool sel) {
     word_t size = pred_size + succ_size;
     SET(HDR_PTR(pred_ptr), ZIP(size, UNUSED));
     SET(FTR_PTR(pred_ptr), ZIP(size, UNUSED));
-    list_push(pred_ptr, RANK(size));
+    if (sel) list_push(pred_ptr, RANK(size));
     assert(STAT(pred_ptr) == UNUSED);
 }
 
 // place a block in an UNUSED segment (advancedly removed from free list)
 static void place(void* ptr, word_t size, bool sel) {
     word_t orgsize = SIZE(ptr);
-    if (!sel) list_remove(ptr, RANK(orgsize));
-    if (orgsize - size > META_SIZE) split(ptr, size);
+    if (sel) list_remove(ptr, RANK(orgsize));
+    if (orgsize - size > MIN_BLK_SIZE) split(ptr, size);
     else size = orgsize;
     SET(HDR_PTR(ptr), ZIP(size, USED));
     SET(FTR_PTR(ptr), ZIP(size, USED));
@@ -194,12 +198,15 @@ static void* find_fit(word_t size, int rank) {
  * mm_init - Called when a new trace starts.
  */
 int mm_init(void) {
-    word_t size = BDR_OFF + 2*WORD_SIZE;
+    border_offset = ALIGN(RANK_NUM * WORD_SIZE) + WORD_SIZE;
+    word_t size = BDR_OFF + WORD_SIZE;
     heap_base = mem_sbrk(size);
     if (heap_base == NULL) return -1;
     for (int i = 0; i < RANK_NUM; ++i) SET(BUCK(i), BDR_OFF);
-    SET(HDR_PTR(PRO_BDR_PTR), ZIP(2*WORD_SIZE, BORDER));
+    SET(HDR_PTR(PRO_BDR_PTR), ZIP(WORD_SIZE, BORDER));
+    // assert(SIZE(PRO_BDR_PTR) == WORD_SIZE);
     SET(HDR_PTR(EPI_BDR_PTR), ZIP(0, BORDER));
+    // assert(SIZE(PRO_BDR_PTR) == WORD_SIZE);
     return 0;
 }
 
@@ -208,18 +215,19 @@ int mm_init(void) {
  *      Always allocate a block whose size is a multiple of the alignment.
  */
 void *malloc(size_t size) {
-    // ++count;
+    dbg_inc();
+
     if (size == 0) return NULL;
-    size = ALIGN(size + META_SIZE);
+    size = MAX(ALIGN(size + META_SIZE), MIN_BLK_SIZE);
 
     void *ptr;
     int rank = RANK(size);
     do {
-        ptr = find_fit(size, rank); 
+        ptr = find_fit(size, rank);
     } 
-    while(ptr == NULL && ++rank < RANK_NUM);
+    while(ptr == NULL && (rank += STP_BLK_BITS) < RANK_NUM);
 
-    
+
     dbg_printf("#%d [malloc] size %ld, rank %d, ", count, size, rank);
     if (ptr == NULL) {
         ptr = extend(size);
@@ -231,7 +239,7 @@ void *malloc(size_t size) {
     } else {
         dbg_printf("fit %d\n", PTR_DIFF(ptr, heap_base));
         list_remove(ptr, rank);
-        place(ptr, size, true);
+        place(ptr, size, false);
     }
     assert(STAT(ptr) == USED);
     return ptr;
@@ -244,7 +252,8 @@ void *malloc(size_t size) {
         and will do nothing if we determine it as invalid.
  */
 void free(void *ptr) {
-    // ++count;
+    dbg_inc();
+
     if (ptr == NULL || STAT(ptr) != USED) return ;
     word_t size = SIZE(ptr);
 	list_push(ptr, RANK(size));
@@ -277,7 +286,8 @@ void free(void *ptr) {
         a new block, and the old block will be deallocated.
  */
 void *realloc(void *oldptr, size_t size) {
-    
+    dbg_inc();
+
     /* If size == 0 then this is just free, and we return NULL. */
     if (size == 0) {
         free(oldptr);
@@ -291,7 +301,7 @@ void *realloc(void *oldptr, size_t size) {
 
     word_t orgsize = size;
     word_t oldsize = SIZE(oldptr);
-    size = ALIGN(size + META_SIZE);
+    size = MAX(ALIGN(size + META_SIZE), MIN_BLK_SIZE);
 
     /* If the original block is large enough. */
     if (oldsize >= size) return oldptr;
@@ -319,6 +329,7 @@ void *realloc(void *oldptr, size_t size) {
  * calloc - Allocate the block and set it to zero.
  */
 void *calloc (size_t nmemb, size_t size) {
+    dbg_inc();
     size_t bytes = nmemb * size;
     void *newptr = malloc(bytes);
     memset(newptr, 0, bytes);
@@ -340,13 +351,13 @@ void mm_checkheap(int verbose){
     dbg_printf("[check border]\n");
     dbg_printf("prologue %d %s %s\n", PTR_DIFF(PRO_BDR_PTR, heap_base), 
         (STAT(PRO_BDR_PTR) == BORDER)? "yes": "no", 
-        (SIZE(PRO_BDR_PTR) == 2*WORD_SIZE)? "yes": "no");
+        (SIZE(PRO_BDR_PTR) == WORD_SIZE)? "yes": "no");
     dbg_printf("epilogue %d %s %s\n", PTR_DIFF(EPI_BDR_PTR, heap_base), 
         (STAT(EPI_BDR_PTR) == BORDER)? "yes": "no",
         (SIZE(EPI_BDR_PTR) == 0)? "yes": "no");
     dbg_printf("[check blocks - heap]\n");
     int cnt1 = 50;
-    void *ptr = PTR_INCR(PRO_BDR_PTR, 2*WORD_SIZE);
+    void *ptr = PTR_INCR(PRO_BDR_PTR, WORD_SIZE);
     for (; STAT(ptr) != BORDER && --cnt1 > 0; ptr = HEAP_NEXT(ptr)) {
         dbg_printf("%d(%d,%d|%d,%d) ", PTR_DIFF(ptr, heap_base), 
             SIZE(ptr), STAT(ptr), UNZIP_SIZE(FTR_PTR(ptr)), UNZIP_STAT(FTR_PTR(ptr)));
